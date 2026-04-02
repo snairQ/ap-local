@@ -237,6 +237,85 @@ refresh:
     just build
 
 # ---------------------------------------------------------------------------
+# Coder workspace (remote — DCM handles orchestration, just handles the rest)
+# ---------------------------------------------------------------------------
+
+# Default Coder workspace name
+coder_ws := env("CODER_WS", "sajeev-ap-local")
+coder_api := "bean-api-1"
+
+# Show Coder workspace status
+coder-status:
+    coder show {{ coder_ws }}
+
+# SSH into the Coder workspace
+coder-ssh:
+    coder ssh {{ coder_ws }}
+
+# SSH into the API container on Coder
+coder-api:
+    ssh coder.{{ coder_ws }} -t 'docker exec -it {{ coder_api }} bash -ic "cd /var/www/html && exec bash"'
+
+# Apply post-DCM fixes on Coder (ENVIRONMENT=local, clamdscan stub, cache perms)
+coder-fix:
+    #!/usr/bin/env bash
+    echo "Applying fixes to Coder workspace {{ coder_ws }} ..."
+    ssh coder.{{ coder_ws }} 'docker exec {{ coder_api }} bash -c "
+      # Set ENVIRONMENT=local for AWS STS bypass
+      env_local=/var/www/html/.env.local
+      if ! grep -q \"^ENVIRONMENT=local\" \$env_local 2>/dev/null; then
+        echo ENVIRONMENT=local >> \$env_local
+        echo \"Added ENVIRONMENT=local\"
+      else
+        echo \"ENVIRONMENT=local already set\"
+      fi
+
+      # Stub clamdscan (not needed on amd64 but keeps parity)
+      printf \"#!/bin/bash\ncat > /dev/null\nexit 0\n\" > /usr/local/bin/clamdscan
+      chmod +x /usr/local/bin/clamdscan
+      echo \"clamdscan stubbed\"
+
+      # Fix cache perms
+      chown -R www-data:www-data /var/www/html/var/cache 2>/dev/null
+      echo \"Cache perms fixed\"
+
+      # Warm cache
+      php /var/www/html/bin/console cache:warmup --env=prod 2>&1 | tail -1
+      chown -R www-data:www-data /var/www/html/var/cache 2>/dev/null
+      echo \"Done.\"
+    "'
+
+# Load demo fixtures on Coder workspace
+coder-db-reset:
+    #!/usr/bin/env bash
+    echo "Resetting database on Coder workspace {{ coder_ws }} ..."
+    just coder-fix
+    echo ""
+    echo "Running setupdemo (this takes a few minutes) ..."
+    ssh coder.{{ coder_ws }} 'docker exec {{ coder_api }} bash -ic "source /root/.commonrc && setupdemo"'
+    echo ""
+    echo "Resetting all passwords to pwd ..."
+    ssh coder.{{ coder_ws }} 'docker exec {{ coder_api }} bash -ic "source /root/.commonrc && pwdpwd"'
+    echo ""
+    echo "Done. Login at the Coder workspace URL with any user and password pwd"
+
+# Reset passwords on Coder workspace
+coder-db-pwdreset:
+    ssh coder.{{ coder_ws }} 'docker exec {{ coder_api }} bash -ic "source /root/.commonrc && pwdpwd"'
+
+# Run a Symfony console command on Coder (e.g. just coder-console bean:bcm)
+coder-console *args="":
+    ssh coder.{{ coder_ws }} 'docker exec {{ coder_api }} bash -c "php /var/www/html/bin/console --env=prod {{ args }}"'
+
+# View API logs on Coder
+coder-logs *args="-f --tail 50":
+    ssh coder.{{ coder_ws }} 'docker logs {{ args }} {{ coder_api }}'
+
+# Run command in Coder API container (e.g. just coder-exec "php -v")
+coder-exec *cmd="":
+    ssh coder.{{ coder_ws }} 'docker exec {{ coder_api }} bash -c "{{ cmd }}"'
+
+# ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
 
