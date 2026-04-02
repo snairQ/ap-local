@@ -1,0 +1,5 @@
+# Local SSL certs
+certs/
+
+# Env overrides (user-specific CODE_DIR)
+.env

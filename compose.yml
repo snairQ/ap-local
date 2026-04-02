@@ -1,0 +1,193 @@
+# AP Local Development Environment
+# Usage: just setup && just up
+
+services:
+  # --- Infrastructure: AWS fakes ---
+  fake-s3:
+    image: quadientcz/fake-s3:latest
+    ports:
+      - "4569:4569"
+
+  fake-sqs:
+    image: softwaremill/elasticmq-native:1.6.8
+    ports:
+      - "9324:9324"
+      - "9325:9325"
+
+  fake-sqs-admin:
+    image: pacovk/sqs-admin
+    ports:
+      - "3999:3999"
+    environment:
+      SQS_ENDPOINT_URL: http://fake-sqs:9324
+
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    ports:
+      - "8007:8000"
+
+  dynamodb-admin:
+    image: aaronshaf/dynamodb-admin:4.6.2
+    ports:
+      - "8008:8001"
+    environment:
+      DYNAMO_ENDPOINT: http://dynamodb-local:8000
+      AWS_REGION: dynamodb-local
+      AWS_ACCESS_KEY_ID: dynamodblocal
+      AWS_SECRET_ACCESS_KEY: dynamodblocal
+
+  # --- Infrastructure: Data stores ---
+  postgres:
+    image: postgres:17.7-alpine
+    environment:
+      TERM: screen-bce
+      POSTGRES_HOST_AUTH_METHOD: trust
+    networks:
+      default:
+        aliases:
+          - pg
+    ports:
+      - "5432:5432"
+
+  # --- Infrastructure: Message queues (RabbitMQ cluster + HAProxy LB) ---
+  mq1:
+    image: quadientcz/rabbitmq:latest
+    hostname: mq1
+    ports:
+      - "15672:15672"
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "BeanworksAP Messaging Queue"
+
+  mq2:
+    image: quadientcz/rabbitmq:latest
+    hostname: mq2
+    ports:
+      - "15673:15672"
+    environment:
+      RABBITMQ_ERLANG_COOKIE: "BeanworksAP Messaging Queue"
+
+  lb:
+    build:
+      context: ${CODE_DIR}/service-haproxy/
+      dockerfile: ./Dockerfile
+    ports:
+      - "1936:1936"
+      - "5672:5672"
+
+  # --- Infrastructure: Logging ---
+  cdk-fluent:
+    build:
+      context: ${CODE_DIR}/cdk/lib/Util/fluentd
+      dockerfile: ./Dockerfile
+    environment:
+      ENVIRONMENT: local-dev
+    ports:
+      - "5170:5170"
+      - "24224:24224"
+
+  # --- Infrastructure: Mocks ---
+  wire-mock:
+    image: rodolpheche/wiremock
+    volumes:
+      - ${CODE_DIR}/beanworksapi/tests/wireMockStubs:/home/wiremock
+    ports:
+      - "18080:8080"
+
+  # --- Application: API (PHP/Symfony) ---
+  api:
+    build:
+      context: ${CODE_DIR}/beanworksapi/
+      dockerfile: ./docker-compose/Dockerfile
+    hostname: dc-api
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        ln -sfn /var/www/html /srv/api
+        exec /entrypoint.sh
+    volumes:
+      # Folders
+      - ${CODE_DIR}/beanworksapi/bin:/var/www/html/bin:delegated
+      - ${CODE_DIR}/beanworksapi/codebuild:/var/www/html/codebuild:delegated
+      - ${CODE_DIR}/beanworksapi/config:/var/www/html/config:delegated
+      - ${CODE_DIR}/beanworksapi/docker-compose/include/.bashrc:/root/.bashrc:delegated
+      - ${CODE_DIR}/beanworksapi/docker-compose/include/.commonrc:/root/.commonrc:delegated
+      - ${CODE_DIR}/beanworksapi/e2e-test:/var/www/html/e2e-test:delegated
+      - ${CODE_DIR}/beanworksapi/graphqlTests:/var/www/html/graphqlTests:delegated
+      - ${CODE_DIR}/beanworksapi/incoming:/var/www/html/incoming:delegated
+      - ${CODE_DIR}/beanworksapi/public:/var/www/html/public:delegated
+      - ${CODE_DIR}/beanworksapi/scripts:/var/www/html/scripts:delegated
+      - ${CODE_DIR}/beanworksapi/shared:/var/www/html/shared:delegated
+      - ${CODE_DIR}/beanworksapi/src:/var/www/html/src:delegated
+      - ${CODE_DIR}/beanworksapi/systemConf:/var/www/html/systemConf:delegated
+      - ${CODE_DIR}/beanworksapi/templates:/var/www/html/templates:delegated
+      - ${CODE_DIR}/beanworksapi/tests:/var/www/html/tests:delegated
+      - ${CODE_DIR}/beanworksapi/translations:/var/www/html/translations:delegated
+      - ${CODE_DIR}/beanworksapi/upgrades:/var/www/html/upgrades:delegated
+      - ${CODE_DIR}/beanworksapi/deploy:/var/www/html/deploy:delegated
+      - ${CODE_DIR}/beanworksapi/lib:/var/www/html/lib:delegated
+      # Single files
+      - ${CODE_DIR}/beanworksapi/.env:/var/www/html/.env:delegated
+      - ${CODE_DIR}/beanworksapi/.env.test:/var/www/html/.env.test:delegated
+      - ${CODE_DIR}/beanworksapi/.env.functest:/var/www/html/.env.functest:delegated
+      - ${CODE_DIR}/beanworksapi/.env.local:/var/www/html/.env.local:delegated
+      - ${CODE_DIR}/beanworksapi/.env.test.local:/var/www/html/.env.test.local:delegated
+      - ${CODE_DIR}/beanworksapi/phpunit.xml.dist:/var/www/html/phpunit.xml.dist:delegated
+      - ${CODE_DIR}/beanworksapi/composer.json:/var/www/html/composer.json:delegated
+      - ${CODE_DIR}/beanworksapi/composer.lock:/var/www/html/composer.lock:delegated
+      - ${CODE_DIR}/beanworksapi/symfony.lock:/var/www/html/symfony.lock:delegated
+      - ${CODE_DIR}/beanworksapi/phpcs.xml:/var/www/html/phpcs.xml:delegated
+    environment:
+      PG_HOST: postgres
+      PG_PORT: "5432"
+      REDIS_HOST: localhost
+      REDIS_PORT: "6379"
+      RABBIT_HOST: lb
+      RABBIT_PORT: "5672"
+      TERM: screen-bce
+      WM_HOST: wire-mock
+      WM_PORT: "8080"
+    ports:
+      - "8788:80"
+      - "2222:2222"
+      - "9001:9001"
+      - "25000:25000"
+      - "4040:4040"
+
+  # --- Application: Auth ---
+  auth:
+    image: quadientcz/beanauth:latest
+    environment:
+      BEANAUTH_CONFIG: "classpath:configuration.json"
+    ports:
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:9010:9010"
+    volumes:
+      - ${CODE_DIR}/beanauth:/opt/beanauth
+
+  # --- Application: SFTP ---
+  sftp:
+    image: quadientcz/sftpserver:latest
+    volumes:
+      - ${CODE_DIR}/beanworksapi/incoming:/opt/beanworks-sftp-server/incoming
+    ports:
+      - "127.0.0.1:18000:18000"
+      - "127.0.0.1:19010:19010"
+      - "22000:22000"
+
+  # --- Application: Frontend (served via fake CloudFront) ---
+  cloudfront:
+    image: quadientcz/fake-cloudfront:latest
+    depends_on:
+      auth:
+        condition: service_started
+    volumes:
+      - ${CODE_DIR}/beanworksui/build:/ui
+      - ./certs:/etc/nginx/ssl
+    ports:
+      - "443:443"
+      - "8080:80"
+
+  vscode:
+    image: alpine:latest
+    entrypoint: "tail -f /dev/null"
