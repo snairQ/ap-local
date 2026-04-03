@@ -297,6 +297,11 @@ coder-db-reset:
     echo "Resetting all passwords to pwd ..."
     ssh coder.{{ coder_ws }} 'docker exec {{ coder_api }} bash -ic "source /root/.commonrc && pwdpwd"'
     echo ""
+    echo "Restarting auth service (creates beanauth schema now that DB is ready) ..."
+    ssh coder.{{ coder_ws }} 'docker restart bean-auth-1'
+    echo "Waiting for auth to initialize ..."
+    sleep 20
+    echo ""
     echo "Done. Login at the Coder workspace URL with any user and password pwd"
 
 # Reset passwords on Coder workspace
